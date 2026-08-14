@@ -691,7 +691,8 @@ namespace fnecore
         private async void ListenTraffic()
         {
             CancellationToken ct = listenTrafficCancelToken.Token;
-            ct.ThrowIfCancellationRequested();
+            if (ct.IsCancellationRequested)
+                return;
 
             while (!abortListening)
             {
@@ -762,6 +763,12 @@ namespace fnecore
                                         // is this for our peer?
                                         if (peerId == this.peerId)
                                         {
+                                            if (message.Length < 16)
+                                            {
+                                                Log(LogLevel.WARNING, $"({systemName}) Dropping short DMR protocol payload ({message.Length} bytes)");
+                                                break;
+                                            }
+
                                             // TODO: port the mux validation logic from dvmhost:src/common/network/Network.cpp
 
                                             byte seqNo = message[4];
@@ -797,6 +804,12 @@ namespace fnecore
                                         // is this for our peer?
                                         if (peerId == this.peerId)
                                         {
+                                            if (message.Length < 23)
+                                            {
+                                                Log(LogLevel.WARNING, $"({systemName}) Dropping short P25 protocol payload ({message.Length} bytes)");
+                                                break;
+                                            }
+
                                             // TODO: port the mux validation logic from dvmhost:src/common/network/Network.cpp
 
                                             uint srcId = FneUtils.Bytes3ToUInt32(message, 5);
@@ -823,6 +836,12 @@ namespace fnecore
                                         // is this for our peer?
                                         if (peerId == this.peerId)
                                         {
+                                            if (message.Length < 16)
+                                            {
+                                                Log(LogLevel.WARNING, $"({systemName}) Dropping short NXDN protocol payload ({message.Length} bytes)");
+                                                break;
+                                            }
+
                                             // TODO: port the mux validation logic from dvmhost:src/common/network/Network.cpp
 
                                             NXDNMessageType messageType = (NXDNMessageType)message[4];
@@ -851,6 +870,12 @@ namespace fnecore
                                         // is this for our peer?
                                         if (peerId == this.peerId)
                                         {
+                                            if (message.Length < 16)
+                                            {
+                                                Log(LogLevel.WARNING, $"({systemName}) Dropping short analog protocol payload ({message.Length} bytes)");
+                                                break;
+                                            }
+
                                             // TODO: port the mux validation logic from dvmhost:src/common/network/Network.cpp
 
                                             uint srcId = FneUtils.Bytes3ToUInt32(message, 5);
@@ -1338,6 +1363,10 @@ namespace fnecore
                             break;
                     }
                 }
+                catch (Exception ex)
+                {
+                    Log(LogLevel.ERROR, $"({systemName}) Unhandled traffic frame error; dropping frame and continuing: {ex.Message}");
+                }
 
                 if (ct.IsCancellationRequested)
                     abortListening = true;
@@ -1351,7 +1380,8 @@ namespace fnecore
         private async void ListenMetadata()
         {
             CancellationToken ct = listenMetadataCancelToken.Token;
-            ct.ThrowIfCancellationRequested();
+            if (ct.IsCancellationRequested)
+                return;
 
             while (!abortListening)
             {
@@ -1477,6 +1507,10 @@ namespace fnecore
                             Log(LogLevel.FATAL, $"({systemName}) SOCKET ERROR: {se.SocketErrorCode}; {se.Message}");
                             break;
                     }
+                }
+                catch (Exception ex)
+                {
+                    Log(LogLevel.ERROR, $"({systemName}) Unhandled metadata frame error; dropping frame and continuing: {ex.Message}");
                 }
 
                 if (ct.IsCancellationRequested)

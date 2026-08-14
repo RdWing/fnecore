@@ -1233,11 +1233,22 @@ namespace fnecore
                     return null;
                 }
 
-                // copy message
+                // Copy only a payload that is fully present in the received
+                // datagram. A malformed length used to make BlockCopy throw
+                // from the async receive loop and terminate the process.
+                int payloadOffset = (int)(Constants.RtpHeaderLengthBytes
+                    + Constants.RtpExtensionHeaderLengthBytes
+                    + Constants.RtpFNEHeaderLengthBytes);
+                if (frame.Message.Length < payloadOffset
+                    || fneHeader.MessageLength > (uint)(frame.Message.Length - payloadOffset))
+                {
+                    Log(LogLevel.ERROR, $"Malformed FNE payload length {fneHeader.MessageLength}; available bytes {Math.Max(0, frame.Message.Length - payloadOffset)}");
+                    return null;
+                }
+
                 messageLength = (int)fneHeader.MessageLength;
                 byte[] message = new byte[messageLength];
-                Buffer.BlockCopy(frame.Message, (int)(Constants.RtpHeaderLengthBytes + Constants.RtpExtensionHeaderLengthBytes + Constants.RtpFNEHeaderLengthBytes), 
-                    message, 0, messageLength);
+                Buffer.BlockCopy(frame.Message, payloadOffset, message, 0, messageLength);
 
                 ushort calc = CRC.CreateCRC16(message, (uint)(messageLength * 8));
                 if (calc != fneHeader.CRC)
