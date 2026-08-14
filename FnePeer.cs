@@ -146,6 +146,17 @@ namespace fnecore
             set;
         }
 
+        /// <summary>
+        /// Gets/sets whether decoded digital traffic summaries are emitted
+        /// through <see cref="FneBase.Logger"/>. Raw packet tracing remains
+        /// separately controlled by <see cref="FneBase.RawPacketTrace"/>.
+        /// </summary>
+        public bool TrafficLogging
+        {
+            get { return trafficLogging; }
+            set { trafficLogging = value; }
+        }
+
         /*
         ** Events/Callbacks
         */
@@ -229,9 +240,9 @@ namespace fnecore
             }
 
             abortListening = false;
-            listenTrafficTask = Task.Factory.StartNew(ListenTraffic, listenTrafficCancelToken.Token);
-            listenMetadataTask = Task.Factory.StartNew(ListenMetadata, listenMetadataCancelToken.Token);
-            maintainenceTask = Task.Factory.StartNew(Maintainence, maintainenceCancelToken.Token);
+            listenTrafficTask = Task.Run(ListenTraffic, listenTrafficCancelToken.Token);
+            listenMetadataTask = Task.Run(ListenMetadata, listenMetadataCancelToken.Token);
+            maintainenceTask = Task.Run(Maintainence, maintainenceCancelToken.Token);
 
             isStarted = true;
         }
@@ -260,8 +271,8 @@ namespace fnecore
             }
 
             abortListening = false;
-            listenTrafficTask = Task.Factory.StartNew(ListenTraffic, listenTrafficCancelToken.Token);
-            listenMetadataTask = Task.Factory.StartNew(ListenMetadata, listenMetadataCancelToken.Token);
+            listenTrafficTask = Task.Run(ListenTraffic, listenTrafficCancelToken.Token);
+            listenMetadataTask = Task.Run(ListenMetadata, listenMetadataCancelToken.Token);
 
             isStarted = true;
         }
@@ -276,15 +287,31 @@ namespace fnecore
 
             Logger(LogLevel.INFO, $"({systemName}) stopping network services, {masterEndpoint}");
 
-            // send shutdown opcode to server
-            SendMasterTraffic(CreateOpcode(Constants.NET_FUNC_RPT_CLOSING, Constants.NET_SUBFUNC_NOP), new byte[1], 1, CreateStreamID(), true);
+            // Set the stop state before attempting the best-effort closing
+            // packet. A dead/closed UDP peer must never prevent listener
+            // cancellation or make a partial startup leak its receive loops.
+            abortListening = true;
+            listenTrafficCancelToken.Cancel();
+            listenMetadataCancelToken.Cancel();
+            maintainenceCancelToken.Cancel();
+
+            try
+            {
+                SendMasterTraffic(
+                    CreateOpcode(Constants.NET_FUNC_RPT_CLOSING, Constants.NET_SUBFUNC_NOP),
+                    new byte[1],
+                    1,
+                    CreateStreamID(),
+                    true);
+            }
+            catch (Exception ex)
+            {
+                Log(LogLevel.WARNING, $"({systemName}) shutdown packet failed: {ex.Message}");
+            }
 
             // stop UDP listen traffic task
             if (listenTrafficTask != null)
             {
-                abortListening = true;
-                listenTrafficCancelToken.Cancel();
-
                 try
                 {
                     listenTrafficTask.GetAwaiter().GetResult();
@@ -299,8 +326,6 @@ namespace fnecore
             // stop UDP listen metadata task
             if (listenMetadataTask != null)
             {
-                listenMetadataCancelToken.Cancel();
-
                 try
                 {
                     listenMetadataTask.GetAwaiter().GetResult();
@@ -315,8 +340,6 @@ namespace fnecore
             // stop maintainence task
             if (maintainenceTask != null)
             {
-                maintainenceCancelToken.Cancel();
-
                 try
                 {
                     maintainenceTask.GetAwaiter().GetResult();
@@ -688,7 +711,7 @@ namespace fnecore
         /// <summary>
         /// Internal UDP listen traffic routine.
         /// </summary>
-        private async void ListenTraffic()
+        private async Task ListenTraffic()
         {
             CancellationToken ct = listenTrafficCancelToken.Token;
             if (ct.IsCancellationRequested)
@@ -698,7 +721,7 @@ namespace fnecore
             {
                 try
                 {
-                    UdpFrame frame = await clientTraffic.Receive();
+                    UdpFrame frame = await clientTraffic.Receive(ct);
                     if (RawPacketTrace)
                         Log(LogLevel.DEBUG, $"Traffic Network Received (from {frame.Endpoint}) -- {FneUtils.HexDump(frame.Message, 0)}");
 
@@ -785,10 +808,8 @@ namespace fnecore
                                                 dataType = (DMRDataType)(bits & ~(0x20));
 
                                             byte n = (byte)(bits & 0xF);
-#if DEBUG
                                             if (trafficLogging)
                                                 Log(LogLevel.DEBUG, $"{systemName} DMRD: SRC_PEER {peerId} SRC_ID {srcId} DST_ID {dstId} TS {slot} [STREAM ID {streamId}]");
-#endif
                                             // perform any userland actions with the data
                                             FireDMRDataReceived(new DMRDataReceivedEvent(peerId, srcId, dstId, slot, callType, frameType, dataType, n, rtpHeader.Sequence, streamId, message));
                                         }
@@ -817,10 +838,8 @@ namespace fnecore
                                             CallType callType = (message[4] == P25Defines.LC_PRIVATE) ? CallType.PRIVATE : CallType.GROUP;
                                             P25DUID duid = (P25DUID)message[22];
                                             FrameType frameType = ((duid != P25DUID.TDU) && (duid != P25DUID.TDULC)) ? FrameType.VOICE : FrameType.TERMINATOR;
-#if DEBUG
                                             if (trafficLogging)
                                                 Log(LogLevel.DEBUG, $"{systemName} P25D: SRC_PEER {peerId} SRC_ID {srcId} DST_ID {dstId} [STREAM ID {streamId}]");
-#endif
                                             // perform any userland actions with the data
                                             FireP25DataReceived(new P25DataReceivedEvent(peerId, srcId, dstId, callType, duid, frameType, rtpHeader.Sequence, streamId, message));
                                         }
@@ -851,10 +870,8 @@ namespace fnecore
                                             byte bits = message[15];
                                             CallType callType = ((bits & 0x40) == 0x40) ? CallType.PRIVATE : CallType.GROUP;
                                             FrameType frameType = (messageType != NXDNMessageType.MESSAGE_TYPE_TX_REL) ? FrameType.VOICE : FrameType.TERMINATOR;
-#if DEBUG
                                             if (trafficLogging)
                                                 Log(LogLevel.DEBUG, $"{systemName} NXDD: SRC_PEER {peerId} SRC_ID {srcId} DST_ID {dstId} [STREAM ID {streamId}]");
-#endif
                                             // perform any userland actions with the data
                                             FireNXDNDataReceived(new NXDNDataReceivedEvent(peerId, srcId, dstId, callType, messageType, frameType, rtpHeader.Sequence, streamId, message));
                                         }
@@ -883,10 +900,8 @@ namespace fnecore
                                             CallType callType = CallType.GROUP; /* analog calls cannot be private calls right now ... */
                                             AudioFrameType audioFrameType = (AudioFrameType)(message[15] & 0x0F);
                                             FrameType frameType = (audioFrameType != AudioFrameType.TERMINATOR) ? FrameType.VOICE : FrameType.TERMINATOR;
-#if DEBUG
                                             if (trafficLogging)
                                                 Log(LogLevel.DEBUG, $"{systemName} P25D: SRC_PEER {peerId} SRC_ID {srcId} DST_ID {dstId} [STREAM ID {streamId}]");
-#endif
                                             // perform any userland actions with the data
                                             FireAnalogDataReceived(new AnalogDataReceivedEvent(peerId, srcId, dstId, callType, audioFrameType, frameType, rtpHeader.Sequence, streamId, message));
                                         }
@@ -1327,8 +1342,15 @@ namespace fnecore
                         }
                     }
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
                 catch (InvalidOperationException)
                 {
+                    if (abortListening || ct.IsCancellationRequested)
+                        break;
+
                     Log(LogLevel.ERROR, $"({systemName}) Not connected or lost connection to {masterEndpoint}; reconnecting...");
                     RotateMasterEndpont();
 
@@ -1337,7 +1359,9 @@ namespace fnecore
                     PingsAcked = 0;
                     info.State = ConnectionState.WAITING_LOGIN;
 
-                    clientTraffic.Connect(masterEndpoint);
+                    await WaitBeforeReconnect(ct);
+                    if (!abortListening && !ct.IsCancellationRequested)
+                        clientTraffic.Connect(masterEndpoint);
                 }
                 catch (SocketException se)
                 {
@@ -1356,7 +1380,9 @@ namespace fnecore
                             PingsAcked = 0;
                             info.State = ConnectionState.WAITING_LOGIN;
 
-                            clientTraffic.Connect(masterEndpoint);
+                            await WaitBeforeReconnect(ct);
+                            if (!abortListening && !ct.IsCancellationRequested)
+                                clientTraffic.Connect(masterEndpoint);
                             break;
                         default:
                             Log(LogLevel.FATAL, $"({systemName}) SOCKET ERROR: {se.SocketErrorCode}; {se.Message}");
@@ -1374,10 +1400,23 @@ namespace fnecore
         }
 
 
+        private static async Task WaitBeforeReconnect(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // Teardown cancels the delay so a failed receive cannot
+                // reconnect after its owner has stopped.
+            }
+        }
+
         /// <summary>
         /// Internal UDP listen metadata routine.
         /// </summary>
-        private async void ListenMetadata()
+        private async Task ListenMetadata()
         {
             CancellationToken ct = listenMetadataCancelToken.Token;
             if (ct.IsCancellationRequested)
@@ -1387,7 +1426,7 @@ namespace fnecore
             {
                 try
                 {
-                    UdpFrame frame = await clientMetadata.Receive();
+                    UdpFrame frame = await clientMetadata.Receive(ct);
                     if (RawPacketTrace)
                         Log(LogLevel.DEBUG, $"Metadata Network Received (from {frame.Endpoint}) -- {FneUtils.HexDump(frame.Message, 0)}");
 
@@ -1486,10 +1525,19 @@ namespace fnecore
                         }
                     }
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
                 catch (InvalidOperationException)
                 {
+                    if (abortListening || ct.IsCancellationRequested)
+                        break;
+
                     Log(LogLevel.WARNING, $"({systemName}) Metadata receiver entered invalid state; reconnecting metadata socket to {metadataEndpoint}");
-                    clientMetadata.Connect(metadataEndpoint);
+                    await WaitBeforeReconnect(ct);
+                    if (!abortListening && !ct.IsCancellationRequested)
+                        clientMetadata.Connect(metadataEndpoint);
                 }
                 catch (SocketException se)
                 {
@@ -1501,7 +1549,9 @@ namespace fnecore
                         case SocketError.ConnectionAborted:
                         case SocketError.ConnectionRefused:
                             Log(LogLevel.WARNING, $"({systemName}) Metadata socket error {se.SocketErrorCode}; reconnecting metadata socket to {metadataEndpoint}");
-                            clientMetadata.Connect(metadataEndpoint);
+                            await WaitBeforeReconnect(ct);
+                            if (!abortListening && !ct.IsCancellationRequested)
+                                clientMetadata.Connect(metadataEndpoint);
                             break;
                         default:
                             Log(LogLevel.FATAL, $"({systemName}) SOCKET ERROR: {se.SocketErrorCode}; {se.Message}");
@@ -1521,7 +1571,7 @@ namespace fnecore
         /// <summary>
         /// Internal maintainence routine.
         /// </summary>
-        private async void Maintainence()
+        private async Task Maintainence()
         {
             CancellationToken ct = maintainenceCancelToken.Token;
             while (!abortListening)

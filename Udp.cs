@@ -17,6 +17,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.Intrinsics.X86;
 using System.Security.Cryptography;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace fnecore
@@ -85,8 +86,17 @@ namespace fnecore
         /// </summary>
         /// <returns></returns>
         public async Task<UdpFrame> Receive()
+            => await Receive(CancellationToken.None);
+
+        /// <summary>
+        /// Receives one datagram and allows the owner to cancel a blocked
+        /// receive during transport teardown.
+        /// </summary>
+        /// <param name="cancellationToken">Cancellation for the receive.</param>
+        /// <returns>The received datagram and its remote endpoint.</returns>
+        public async Task<UdpFrame> Receive(CancellationToken cancellationToken)
         {
-            UdpReceiveResult res = await client.ReceiveAsync();
+            UdpReceiveResult res = await client.ReceiveAsync(cancellationToken);
             byte[] buffer = res.Buffer;
 
             // are we crypto wrapped?
